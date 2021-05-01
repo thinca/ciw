@@ -1,0 +1,463 @@
+#!/bin/bash
+
+set -eu -o pipefail
+
+### sub commands
+
+cmd-help() {
+	cat <<-HELP
+	Usage: $(basename "$0") [options] {subcmd}
+
+	Sub commands:
+	  list                List installed packages
+	  install {pkg}...    Install a package
+	  uninstall {pkg}...  Uninstall a package
+	  update [{pkg}...]   Update packages
+	  use {pkg}           Use specified version of package
+	  help                Show this help
+	  version             Show program version
+
+	  mklink {pkg}...     Make symlinks in bin directory
+	  unlink {pkg}...     Remove symlinks from bin directory
+	HELP
+	exit
+}
+
+cmd-version() {
+	echo 'ciw v0.0.1'
+}
+
+cmd-list() {
+	[[ -d "${CIW_PACKAGES_PATH}" ]] || return 0
+
+	local path pkg pkg_type pkg_name pkg_ver pkg_attrs latest_flag=
+
+	# FIXME: More flexible
+	if [[ "${1:-}" == "@latest" ]]; then
+		latest_flag=1
+	fi
+
+	find "${CIW_PACKAGES_PATH}" -mindepth 3 -maxdepth 3 ! -type l -print0 | while read -r -d $'\0' path; do
+		pkg_ver="${path##*/}"
+		path="${path%/*}"
+		pkg_name="${path##*/}"
+		pkg_name="${pkg_name//__/\/}"
+		path="${path%/*}"
+		pkg_type="${path##*/}"
+		if [[ "${pkg_ver}" == 'latest' ]]; then
+			pkg_ver=
+		else
+			pkg_ver="@${pkg_ver}"
+		fi
+		[[ -z "${latest_flag}" || -z "${pkg_ver}" ]] || continue
+		pkg="${pkg_type}:${pkg_name}${pkg_ver}"
+
+		pkg_attrs=
+		is-current "${pkg}" || pkg_attrs='#'
+
+		echo "${pkg}${pkg_attrs}"
+	done
+}
+
+cmd-install() {
+	local pkg
+
+	for pkg in "$@"; do
+		install-package "${pkg}" && :
+	done
+}
+
+cmd-uninstall() {
+	local pkg
+
+	for pkg in "$@"; do
+		uninstall-package "${pkg}" && :
+	done
+}
+
+cmd-use() {
+	local pkg=$1 pkg_type pkg_name pkg_ver install_path
+
+	read -r pkg_type pkg_name pkg_ver <<< "$(parse-pkg "${pkg}")"
+	[[ -n "${pkg_ver}" ]] || pkg_ver=${2:-latest}
+
+	install_path="$(package-base-path "${pkg}")/${pkg_ver}"
+
+	if [[ ! -d "${install_path}" ]]; then
+		error "${pkg_type}:${pkg_name}@${pkg_ver} is not installed."
+		return 1
+	fi
+
+	use-package "${install_path}"
+}
+
+cmd-check-update() {
+	local pkgs pkg next_version
+
+	if [[ $# == 0 ]]; then
+		readarray -t pkgs <<< "$(cmd-list "@latest")"
+	else
+		pkgs=("$@")
+	fi
+
+	for pkg in "${pkgs[@]}"; do
+		next_version="$(check-package-latest "${pkg}")"
+		if [[ -n "${next_version}" ]]; then
+			echo "${pkg} => ${next_version}"
+		fi
+	done
+}
+
+cmd-update() {
+	local pkgs pkg next_version
+
+	if [[ $# == 0 ]]; then
+		readarray -t pkgs <<< "$(cmd-list "@latest")"
+	else
+		pkgs=("$@")
+	fi
+
+	for pkg in "${pkgs[@]}"; do
+		next_version="$(check-package-latest "${pkg}")"
+		if [[ -n "${next_version}" ]]; then
+			update-package "${pkg}" "${next_version}" && :
+		fi
+	done
+}
+
+cmd-mklink() {
+	local pkg
+
+	for pkg in "$@"; do
+		make-link "${pkg}" && :
+	done
+}
+
+cmd-unlink() {
+	local pkg
+
+	for pkg in "$@"; do
+		remove-link "${pkg}" && :
+	done
+}
+
+cmd-test() {
+	local pkg_type pkg_name pkg_ver pkg_attrs=
+	read -r pkg_type pkg_name pkg_ver pkg_attrs <<< "$(parse-pkg "$@" type name ver attrs)"
+
+	echo "t: ${pkg_type}"
+	echo "n: ${pkg_name}"
+	echo "v: ${pkg_ver}"
+	echo "a: ${pkg_attrs}"
+}
+
+
+### go plugin
+
+plugin-go-install() {
+	local install_path=$1
+	local pkg_name=$2
+	local pkg_ver=${3:-latest}
+
+	(
+		export GO111MODULE=on
+		export GOPATH="${install_path}"
+		go install "${pkg_name}@${pkg_ver}"
+		go clean -modcache
+		rm -rf "${GOPATH}/src" "${GOPATH}/pkg" 2>/dev/null
+	)
+}
+
+plugin-go-latest() {
+	local pkg_name=$1 mod_name
+
+	mod_name="$(go version -m "$(package-ver-path "go:${pkg_name}")" | grep '^\s*mod' | cut -f 3)"
+	curl --silent "https://proxy.golang.org/${mod_name}/@latest" | jq -r '"\(.Version)(\(.Time))"'
+}
+
+
+### cargo plugin
+
+plugin-cargo-install() {
+	local install_path=$1
+	local pkg_name=$2
+	local pkg_ver=$3
+	local version_arg=()
+	[[ "${pkg_ver}" == 'latest' ]] || version_arg=(--version "${pkg_ver}")
+
+	cargo install --root "${install_path}" --target-dir "${install_path}" "${version_arg[@]}" "${pkg_name}"
+}
+
+plugin-cargo-latest() {
+	local pkg_name=$1
+
+	curl --silent "https://crates.io/api/v1/crates/${pkg_name}/versions" | jq -r '.versions[0].num'
+}
+
+
+### npm plugin
+
+plugin-npm-install() {
+	local install_path=$1
+	local pkg_name=$2
+	local pkg_ver=$3
+	[[ "${pkg_ver}" == 'latest' ]] || pkg_name="${pkg_name}@${pkg_ver}"
+
+	npm install --global --prefix "${install_path}" --cache "${CIW_CACHE_PATH}/npm" "${pkg_name}"
+}
+
+plugin-npm-latest() {
+	local pkg_name=$1
+
+	curl --silent "https://registry.npmjs.org/${pkg_name}/latest" | jq -r .version
+}
+
+
+### operations
+
+install-package() {
+	local pkg=$1 pkg_type pkg_name pkg_ver pkg_attrs latest_ver code
+	read -r pkg_type pkg_name pkg_ver pkg_attrs <<< "$(parse-pkg "${pkg}" "type" "name" "ver" "attrs")"
+
+	if [[ $(type -t "plugin-${pkg_type}-install") != 'function' ]]; then
+		error "install: Unknown type: ${pkg_type}"
+		return 1
+	fi
+
+	local install_path="${2:-$(package-ver-path "${pkg}")}"
+	if [[ -d "${install_path}" ]]; then
+		error "'${pkg}' already installed."
+		return 1
+	fi
+
+	: "${pkg_ver:=latest}"
+
+	trap "uninstall-package '${pkg}' '${install_path}'" sigint
+
+	mkdir -p "${install_path}"
+	"plugin-${pkg_type}-install" "${install_path}" "${pkg_name}" "${pkg_ver}" && :
+	code=$?
+	if [[ "${code}" != 0 ]]; then
+		uninstall-package "${pkg} '${install_path}'"
+		error "Install failed: ${pkg}"
+		return "${code}"
+	fi
+
+	if [[ "${pkg_ver}" == "latest" ]]; then
+		latest_ver="${3:-$("plugin-${pkg_type}-latest" "${pkg_name}")}"
+		echo "${latest_ver}" > "${install_path}/version"
+	fi
+
+	if [[ "${pkg_attrs}" != '#' ]]; then
+		use-package "${install_path}"
+
+		make-link "${pkg}" && :
+		code=$?
+		if [[ "${code}" != 0 ]]; then
+			uninstall-package "${pkg} '${install_path}'"
+			error "Install failed: ${pkg}"
+			return "${code}"
+		fi
+	fi
+
+	trap - sigint
+}
+
+uninstall-package() {
+	local pkg=$1 install_path current
+
+	install_path="${2:-$(package-ver-path "${pkg}")}"
+	# FIXME: is-current
+	is-current "${pkg}" && remove-link "${pkg}"
+	rm -fr "${install_path}"
+	current="$(package-base-path "${pkg}")/current"
+	if [[ ! -d "${current}" ]]; then
+		rm -f "${current}"
+	fi
+	rmdir --parents --ignore-fail-on-non-empty "$(package-base-path "${pkg}")"
+}
+
+make-link() {
+	local pkg=$1 install_path
+
+	install_path=$(package-base-path "${pkg}")/current
+	if [[ ! -d "${install_path}/bin" ]]; then
+		return 1
+	fi
+	mkdir -p "${CIW_INSTALL_PATH}"
+	local name rel_path
+	rel_path=$(realpath --no-symlinks "${install_path}/bin" --relative-to "${CIW_INSTALL_PATH}")
+	find "${install_path}/bin" -mindepth 1 -maxdepth 1 -executable -printf '%f\0' | while read -r -d $'\0' name; do
+		# FIXME: --force is dangerous
+		ln --symbolic --force "${rel_path}/${name}" "${CIW_INSTALL_PATH}/${name}"
+	done
+}
+
+remove-link() {
+	local pkg=$1 install_path
+
+	install_path="${2:-"$(package-base-path "${pkg}")/current"}"
+	if [[ ! -d "${install_path}/bin" ]]; then
+		return 0
+	fi
+	mkdir -p "${CIW_INSTALL_PATH}"
+	local name
+	find "${install_path}/bin" -mindepth 1 -maxdepth 1 -executable -printf '%f\0' | while read -r -d $'\0' name; do
+		# FIXME: Check the link points to bin
+		rm -f "${CIW_INSTALL_PATH}/${name}"
+	done
+}
+
+use-package() {
+	local install_path=$1 pkg_dir pkg_ver
+
+	pkg_dir="$(dirname "${install_path}")"
+	pkg_ver="$(basename "${install_path}")"
+	rm -f "${pkg_dir}/current"
+	ln --symbolic --force "${pkg_ver}" "${pkg_dir}/current"
+	# FIXME: Update symlinks in bin
+}
+
+check-package-latest() {
+	local pkg=$1 pkg_type pkg_name version_file current='' latest
+
+	read -r pkg_type pkg_name <<< "$(parse-pkg "${pkg}" "type" "name")"
+	if [[ $(type -t "plugin-${pkg_type}-latest") != 'function' ]]; then
+		error "update: Unsupported type '${pkg_type}': ${pkg}"
+		return 1
+	fi
+
+	version_file="$(package-base-path "${pkg}")/latest/version"
+
+	[[ ! -f "${version_file}" ]] || current=$(< "${version_file}")
+	latest="$("plugin-${pkg_type}-latest" "${pkg_name}")"
+	if [[ "${current}" != "${latest}" ]]; then
+		echo "${latest}"
+	fi
+}
+
+update-package() {
+	local pkg=$1 next_version=$2 pkg_type pkg_name pkg_ver base_path code
+
+	read -r pkg_type pkg_name pkg_ver <<< "$(parse-pkg "${pkg}")"
+	if [[ $(type -t "plugin-${pkg_type}-latest") != 'function' ]]; then
+		error "update: Unsupported type '${pkg_type}': ${pkg}"
+		return 1
+	fi
+	if [[ -n "${pkg_ver}" ]]; then
+		error "update: Do not specify @${pkg_ver}"
+		return 1
+	fi
+
+	base_path="$(package-base-path "${pkg}")"
+	: "${next_version:=$("plugin-${pkg_type}-latest" "${pkg_name}")}"
+
+	install-package "${pkg}#" "${base_path}/next" "${next_version}" && :
+	code=$?
+	if [[ "${code}" != 0 ]]; then
+		return "${code}"
+	fi
+
+	# TODO: remove link if latest is current
+	rm -fr "${base_path}/latest"
+
+	mv "${base_path}/next" "${base_path}/latest"
+	# TODO: update link if latest is current
+}
+
+is-current() {
+	local pkg=$1 pkg_ver
+
+	read -r pkg_ver <<< "$(parse-pkg "${pkg}" "ver")"
+	[[ "$(readlink "$(package-base-path "${pkg}")/current")" == "${pkg_ver:-latest}" ]]
+}
+
+
+### utils
+
+error() {
+	echo "$1" >&2
+}
+
+abort() {
+	error "$1"
+	exit 1
+}
+
+package-ver-path() {
+	local pkg=$1 pkg_type pkg_name pkg_ver
+	read -r pkg_type pkg_name pkg_ver <<< "$(parse-pkg "${pkg}")"
+	: "${pkg_ver:=latest}"
+	echo "${CIW_PACKAGES_PATH}/${pkg_type}/${pkg_name//\//__}/${pkg_ver}"
+}
+
+package-base-path() {
+	local pkg=$1 pkg_type pkg_name
+	read -r pkg_type pkg_name <<< "$(parse-pkg "${pkg}" "type" "name")"
+	echo "${CIW_PACKAGES_PATH}/${pkg_type}/${pkg_name//\//__}"
+}
+
+parse-pkg() {
+	local pkg=$1
+	local pkg_type=${pkg%%:*}
+	local pkg_name=${pkg#*:}
+	local pkg_attrs=
+	if [[ "${pkg_name}" == *# ]]; then
+		pkg_attrs="#"
+		pkg_name=${pkg_name%%#}
+	fi
+	local pkg_ver=${pkg_name##*@}
+	[[ "${pkg_ver}" != "${pkg_name}" ]] || pkg_ver=
+	pkg_name=${pkg_name%@*}
+
+	shift
+	if [[ "$#" == "0" ]]; then
+		echo "${pkg_type} ${pkg_name} ${pkg_ver}"
+		return 0
+	fi
+	local arg
+	for arg in "$@"; do
+		case "${arg}" in
+			type) echo -n "${pkg_type} " ;;
+			name) echo -n "${pkg_name} " ;;
+			ver) echo -n "${pkg_ver} " ;;
+			attrs) echo -n "${pkg_attrs}" ;;
+		esac
+	done
+}
+
+
+### main
+
+main() {
+	local subcmd="${1-help}"
+	${1+shift}
+
+	if [[ $(type -t "cmd-${subcmd}") == 'function' ]]; then
+		"cmd-${subcmd}" "$@"
+	else
+		abort "Unknown sub command: ${subcmd}"
+	fi
+}
+
+: "${CIW_GROUP:=main}"
+
+while [[ "${1:-}" == -* ]]; do
+	case "${1}" in
+		-g|--group)
+			CIW_GROUP=${2:?Specify group name.}
+			shift
+			shift
+			;;
+		-h|--help)
+			shift
+			set -- "help" "$@"
+	esac
+done
+
+: "${CIW_DATA_PATH:=${XDG_DATA_HOME:-${HOME}/.local/share}/ciw}"
+: "${CIW_PACKAGES_PATH:=${CIW_DATA_PATH}/pkg/${CIW_GROUP}}"
+: "${CIW_CACHE_PATH:=${XDG_CACHE_HOME:-${HOME}/.cache}/ciw}"
+: "${CIW_INSTALL_PATH:=${HOME}/.local/bin}"
+
+main "$@"
