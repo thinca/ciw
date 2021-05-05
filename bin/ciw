@@ -141,16 +141,6 @@ cmd-unlink() {
 	done
 }
 
-cmd-test() {
-	local pkg_type pkg_name pkg_ver pkg_attrs=
-	read -r pkg_type pkg_name pkg_ver pkg_attrs <<< "$(parse-pkg "$@" type name ver attrs)"
-
-	echo "t: ${pkg_type}"
-	echo "n: ${pkg_name}"
-	echo "v: ${pkg_ver}"
-	echo "a: ${pkg_attrs}"
-}
-
 
 ### go plugin
 
