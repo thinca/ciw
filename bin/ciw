@@ -79,7 +79,6 @@ cmd-use() {
 	local pkg=$1 pkg_type pkg_name pkg_ver install_path
 
 	read -r pkg_type pkg_name pkg_ver <<< "$(parse-pkg "${pkg}")"
-	[[ -n "${pkg_ver}" ]] || pkg_ver=${2:-latest}
 
 	install_path="$(package-base-path "${pkg}")/${pkg_ver}"
 
@@ -220,8 +219,6 @@ install-package() {
 		return 1
 	fi
 
-	: "${pkg_ver:=latest}"
-
 	trap "uninstall-package '${pkg}' '${install_path}'" sigint
 
 	mkdir -p "${install_path}"
@@ -334,7 +331,7 @@ update-package() {
 		error "update: Unsupported type '${pkg_type}': ${pkg}"
 		return 1
 	fi
-	if [[ -n "${pkg_ver}" ]]; then
+	if [[ "${pkg_ver}" != 'latest' ]]; then
 		error "update: Do not specify @${pkg_ver}"
 		return 1
 	fi
@@ -359,7 +356,7 @@ is-current() {
 	local pkg=$1 pkg_ver
 
 	read -r pkg_ver <<< "$(parse-pkg "${pkg}" "ver")"
-	[[ "$(readlink "$(package-base-path "${pkg}")/current")" == "${pkg_ver:-latest}" ]]
+	[[ "$(readlink "$(package-base-path "${pkg}")/current")" == "${pkg_ver}" ]]
 }
 
 
@@ -377,7 +374,6 @@ abort() {
 package-ver-path() {
 	local pkg=$1 pkg_type pkg_name pkg_ver
 	read -r pkg_type pkg_name pkg_ver <<< "$(parse-pkg "${pkg}")"
-	: "${pkg_ver:=latest}"
 	echo "${CIW_PACKAGES_PATH}/${pkg_type}/${pkg_name//\//__}/${pkg_ver}"
 }
 
@@ -397,7 +393,7 @@ parse-pkg() {
 		pkg_name=${pkg_name%%#}
 	fi
 	local pkg_ver=${pkg_name##*@}
-	[[ "${pkg_ver}" != "${pkg_name}" ]] || pkg_ver=
+	[[ "${pkg_ver}" != "${pkg_name}" ]] || pkg_ver="latest"
 	pkg_name=${pkg_name%@*}
 
 	shift
