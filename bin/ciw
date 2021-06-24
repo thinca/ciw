@@ -225,7 +225,7 @@ install-package() {
 	"plugin-${pkg_type}-install" "${install_path}" "${pkg_name}" "${pkg_ver}" && :
 	code=$?
 	if [[ "${code}" != 0 ]]; then
-		uninstall-package "${pkg} '${install_path}'"
+		uninstall-package "${pkg}" "${install_path}"
 		error "Install failed: ${pkg}"
 		return "${code}"
 	fi
@@ -241,7 +241,7 @@ install-package() {
 		make-link "${pkg}" && :
 		code=$?
 		if [[ "${code}" != 0 ]]; then
-			uninstall-package "${pkg} '${install_path}'"
+			uninstall-package "${pkg}" "${install_path}"
 			error "Install failed: ${pkg}"
 			return "${code}"
 		fi
