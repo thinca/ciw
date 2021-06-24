@@ -91,7 +91,7 @@ cmd-use() {
 }
 
 cmd-check-update() {
-	local pkgs pkg next_version
+	local pkgs pkg current_version next_version
 
 	if [[ $# == 0 ]]; then
 		readarray -t pkgs <<< "$(cmd-list "@latest")"
@@ -100,15 +100,15 @@ cmd-check-update() {
 	fi
 
 	for pkg in "${pkgs[@]}"; do
-		next_version="$(check-package-latest "${pkg}")"
+		read -r current_version next_version <<< "$(check-package-latest "${pkg}")"
 		if [[ -n "${next_version}" ]]; then
-			echo "${pkg} => ${next_version}"
+			echo "[${pkg}] ${current_version} => ${next_version}"
 		fi
 	done
 }
 
 cmd-update() {
-	local pkgs pkg next_version
+	local pkgs pkg current_version next_version
 
 	if [[ $# == 0 ]]; then
 		readarray -t pkgs <<< "$(cmd-list "@latest")"
@@ -117,8 +117,9 @@ cmd-update() {
 	fi
 
 	for pkg in "${pkgs[@]}"; do
-		next_version="$(check-package-latest "${pkg}")"
+		read -r current_version next_version <<< "$(check-package-latest "${pkg}")"
 		if [[ -n "${next_version}" ]]; then
+			echo "update: [${pkg}] ${current_version} => ${next_version}"
 			update-package "${pkg}" "${next_version}" && :
 		fi
 	done
@@ -319,7 +320,7 @@ check-package-latest() {
 	[[ ! -f "${version_file}" ]] || current=$(< "${version_file}")
 	latest="$("plugin-${pkg_type}-latest" "${pkg_name}")"
 	if [[ "${current}" != "${latest}" ]]; then
-		echo "${latest}"
+		echo "${current}" "${latest}"
 	fi
 }
 
