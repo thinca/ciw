@@ -220,7 +220,7 @@ install-package() {
 		return 1
 	fi
 
-	trap "uninstall-package '${pkg}' '${install_path}'" sigint
+	trap "uninstall-package '${pkg}' '${install_path}'" EXIT
 
 	mkdir -p "${install_path}"
 	"plugin-${pkg_type}-install" "${install_path}" "${pkg_name}" "${pkg_ver}" && :
@@ -248,7 +248,7 @@ install-package() {
 		fi
 	fi
 
-	trap - sigint
+	trap - EXIT
 }
 
 uninstall-package() {
