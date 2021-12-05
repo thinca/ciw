@@ -257,6 +257,8 @@ uninstall-package() {
 	install_path="${2:-$(package-ver-path "${pkg}")}"
 	# FIXME: is-current
 	is-current "${pkg}" && remove-link "${pkg}"
+	# Go doesn't give write permissions, so cancellation of install may failure.
+	chmod --recursive --silent u+w "${install_path}"
 	rm -fr "${install_path}"
 	current="$(package-base-path "${pkg}")/current"
 	if [[ ! -d "${current}" ]]; then
