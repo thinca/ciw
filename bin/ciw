@@ -155,13 +155,22 @@ plugin-go-install() {
 		go install "${pkg_name}@${pkg_ver}"
 		go clean -modcache
 		rm -rf "${GOPATH}/src" "${GOPATH}/pkg" 2>/dev/null
+
+		go version -m "${install_path}" | grep '^\s*mod' | cut -f 3 > "${install_path}/module_name"
 	)
 }
 
 plugin-go-latest() {
-	local pkg_name=$1 mod_name
+	local pkg_name=$1 mod_name ver_path
 
-	mod_name="$(go version -m "$(package-ver-path "go:${pkg_name}")" | grep '^\s*mod' | cut -f 3)"
+	ver_path=$(package-ver-path "go:${pkg_name}")
+
+	if [[ -f "${ver_path}/module_name" ]]; then
+		mod_name=$(<"${ver_path}/module_name")
+	else
+		# This can delete in future
+		mod_name="$(go version -m "${ver_path}" | grep '^\s*mod' | cut -f 3)"
+	fi
 	curl --silent "https://proxy.golang.org/${mod_name}/@latest" | jq -r '"\(.Version)(\(.Time))"'
 }
 
