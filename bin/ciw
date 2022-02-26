@@ -185,6 +185,7 @@ plugin-cargo-install() {
 	[[ "${pkg_ver}" == 'latest' ]] || version_arg=(--version "${pkg_ver}")
 
 	cargo install --root "${install_path}" --target-dir "${install_path}" "${version_arg[@]}" "${pkg_name}"
+	rm -fr "${install_path}/release"
 }
 
 plugin-cargo-latest() {
