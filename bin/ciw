@@ -152,6 +152,7 @@ plugin-go-install() {
 	(
 		export GO111MODULE=on
 		export GOPATH="${install_path}"
+		export GOBIN="${install_path}/bin"
 		go install "${pkg_name}@${pkg_ver}"
 		go clean -modcache
 		rm -rf "${GOPATH}/src" "${GOPATH}/pkg" 2>/dev/null
