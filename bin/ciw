@@ -12,6 +12,7 @@ cmd-help() {
 	  list                List installed packages
 	  install {pkg}...    Install a package
 	  uninstall {pkg}...  Uninstall a package
+	  reinstall {pkg}...  Uninstall and install a package
 	  update [{pkg}...]   Update packages
 	  use {pkg}           Use specified version of package
 	  help                Show this help
@@ -72,6 +73,15 @@ cmd-uninstall() {
 
 	for pkg in "$@"; do
 		uninstall-package "${pkg}" && :
+	done
+}
+
+cmd-reinstall() {
+	local pkg
+
+	for pkg in "$@"; do
+		uninstall-package "${pkg}" && :
+		install-package "${pkg}" && :
 	done
 }
 
