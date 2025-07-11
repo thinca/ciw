@@ -172,7 +172,7 @@ plugin-go-install() {
 }
 
 plugin-go-latest() {
-	local pkg_name=$1 mod_name ver_path
+	local pkg_name=$1 mod_name ver_path escaped_mod_name
 
 	ver_path=$(package-ver-path "go:${pkg_name}")
 
@@ -182,7 +182,13 @@ plugin-go-latest() {
 		# This can delete in future
 		mod_name="$(go version -m "${ver_path}" | grep '^\s*mod' | cut -f 3)"
 	fi
-	curl --silent "https://proxy.golang.org/${mod_name}/@latest" | jq -r '"\(.Version)(\(.Time))"'
+	
+	# Escape module name for Go module proxy
+	# Convert uppercase letters to !lowercase as per Go module proxy spec
+	# ref: https://pkg.go.dev/golang.org/x/mod/module
+	escaped_mod_name=$(sed 's/\([A-Z]\)/!\L\1/g' <<< "${mod_name}")
+	
+	curl --silent "https://proxy.golang.org/${escaped_mod_name}/@latest" | jq -r '"\(.Version)(\(.Time))"'
 }
 
 
